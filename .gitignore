@@ -6,3 +6,4 @@
 /.run/Run cartesian_stroke.run.xml
 /work/*
 /.run/*
+.direnv
