@@ -70,12 +70,12 @@ pub mod parallelogram;
 
 pub mod jacobian;
 
-#[cfg(feature = "allow_filesystem")]
+#[cfg(feature = "urdf")]
 pub mod urdf;
-#[cfg(feature = "allow_filesystem")]
+#[cfg(feature = "urdf")]
 pub mod parameter_error;
 
-#[cfg(feature = "allow_filesystem")]
+#[cfg(feature = "urdf")]
 #[path = "utils/simplify_joint_name.rs"]
 mod simplify_joint_name;
 

@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<!--
+  Simplified 6-DOF arm where ALL joint offsets are along Z (no lateral offsets).
+  This triggers a bug in populate_opw_parameters(): joint2's Z offset gets
+  assigned to a1 (lateral) and joint4's Z offset gets assigned to a2 (lateral),
+  producing incorrect FK positions.
+
+  Correct OPW parameters for this arm:
+    c1 = 0.101  (0.036 + 0.065)
+    a1 = 0.0    (no lateral offset)
+    c2 = 0.445
+    a2 = 0.0    (no lateral offset)
+    c3 = 0.44305 (0.24655 + 0.1965)
+    c4 = 0.1765
+    b  = 0.0
+
+  At joints=[0,0,0,0,0,0], correct TCP position is (0, 0, 1.1661).
+-->
+<robot name="parallel_arm">
+  <link name="base_link"/>
+  <link name="link_1"/>
+  <link name="link_2"/>
+  <link name="link_3"/>
+  <link name="link_4"/>
+  <link name="link_5"/>
+  <link name="link_6"/>
+
+  <joint name="joint1" type="revolute">
+    <origin xyz="0 0 0.036" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint2" type="revolute">
+    <origin xyz="0 0 0.065" rpy="0 0 0"/>
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.57" upper="1.57" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint3" type="revolute">
+    <origin xyz="0 0 0.445" rpy="0 0 0"/>
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint4" type="revolute">
+    <origin xyz="0 0 0.24655" rpy="0 0 0"/>
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint5" type="revolute">
+    <origin xyz="0 0 0.1965" rpy="0 0 0"/>
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint6" type="revolute">
+    <origin xyz="0 0 0.1765" rpy="0 0 0"/>
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.28" upper="6.28" effort="0" velocity="2.0"/>
+  </joint>
+</robot>

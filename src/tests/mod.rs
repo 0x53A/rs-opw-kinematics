@@ -8,3 +8,4 @@ mod test_from_yaml;
 mod test_individual_link_positions;
 mod test_parallelogram;
 mod garde_robotics;
+mod parallel_arm;

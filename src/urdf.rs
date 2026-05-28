@@ -10,11 +10,14 @@ use std::fs::read_to_string;
 use std::io;
 use std::path::Path;
 use regex::Regex;
+use std::sync::Arc;
+use nalgebra::{Isometry3, UnitQuaternion};
 use crate::constraints::{BY_PREV, Constraints};
-use crate::kinematic_traits::{Joints, JOINTS_AT_ZERO};
+use crate::kinematic_traits::{Joints, Kinematics, JOINTS_AT_ZERO};
 use crate::kinematics_impl::OPWKinematics;
 use crate::parameter_error::ParameterError;
 use crate::parameters::opw_kinematics::Parameters;
+use crate::tool::Tool;
 
 /// Simplified reading from URDF file. This function assumes sorting of results by closest to
 /// previous (BY_PREV) and no joint offsets (zero offsets). URDF file is expected in the input
@@ -133,6 +136,19 @@ impl Vector3 {
     }
 }
 
+/// Split a vector into the component along the given axis and the single non-zero
+/// perpendicular component. Returns (along_axis, perpendicular).
+/// Errors if more than one perpendicular component is non-zero.
+fn split_along_axis(v: &Vector3, axis: JointAxis) -> Result<(f64, f64), String> {
+    let (along, perp_a, perp_b) = match axis {
+        JointAxis::X => (v.x, v.y, v.z),
+        JointAxis::Y => (v.y, v.x, v.z),
+        JointAxis::Z => (v.z, v.x, v.y),
+    };
+    let perp = non_zero_pair(perp_a, perp_b)?;
+    Ok((along, perp))
+}
+
 /// Helper that returns the non-zero value from a pair of numbers if exactly one
 /// of them is non-zero. If both are zero, `Ok(0.0)` is returned. Returns an
 /// error when both values are non-zero.
@@ -145,11 +161,20 @@ fn non_zero_pair(a: f64, b: f64) -> Result<f64, String> {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum JointAxis {
+    X,
+    Y,
+    Z,
+}
+
 #[derive(Debug, PartialEq)]
 struct JointData {
     name: String,
     vector: Vector3,
+    rpy: [f64; 3],
     sign_correction: i32,
+    axis: JointAxis,
     from: f64,
     to: f64,
 }
@@ -196,10 +221,14 @@ fn collect_joints(element: dom::Element, joints: &mut Vec<JointData>, joint_name
             let limit_element = child.children().into_iter()
                 .find_map(|e| e.element().filter(|el| el.name() == limit_tag));
 
+            let (sign_correction, axis) = axis_element
+                .map_or(Ok((1, JointAxis::Z)), get_axis_sign_and_direction)?;
             let mut joint_data = JointData {
                 name,
                 vector: origin_element.map_or_else(|| Ok(Vector3::default()), get_xyz_from_origin)?,
-                sign_correction: axis_element.map_or(Ok(1), get_axis_sign)?,
+                rpy: origin_element.map_or([0.0; 3], get_rpy_from_origin),
+                sign_correction,
+                axis,
                 from: 0.,
                 to: 0., // 0 to 0 in our notation is 'full circle'
             };
@@ -243,7 +272,20 @@ fn get_xyz_from_origin(element: dom::Element) -> Result<Vector3, Box<dyn Error>>
     })
 }
 
-fn get_axis_sign(axis_element: dom::Element) -> Result<i32, Box<dyn Error>> {
+fn get_rpy_from_origin(element: dom::Element) -> [f64; 3] {
+    let Some(rpy_attr) = element.attribute("rpy") else {
+        return [0.0; 3];
+    };
+    let coords: Result<Vec<f64>, _> = rpy_attr.value().split_whitespace()
+        .map(str::parse)
+        .collect();
+    match coords {
+        Ok(v) if v.len() == 3 => [v[0], v[1], v[2]],
+        _ => [0.0; 3],
+    }
+}
+
+fn get_axis_sign_and_direction(axis_element: dom::Element) -> Result<(i32, JointAxis), Box<dyn Error>> {
     let axis_attr = axis_element.attribute("xyz").ok_or({
         "'xyz' attribute not found in element supposed to represent the axis"
     })?;
@@ -261,8 +303,12 @@ fn get_axis_sign(axis_element: dom::Element) -> Result<i32, Box<dyn Error>> {
     let z = axis_values[2];
 
     match (x, y, z) {
-        (1.0, 0.0, 0.0) | (0.0, 1.0, 0.0) | (0.0, 0.0, 1.0) => Ok(1),
-        (-1.0, 0.0, 0.0) | (0.0, -1.0, 0.0) | (0.0, 0.0, -1.0) => Ok(-1),
+        (1.0, 0.0, 0.0) => Ok((1, JointAxis::X)),
+        (-1.0, 0.0, 0.0) => Ok((-1, JointAxis::X)),
+        (0.0, 1.0, 0.0) => Ok((1, JointAxis::Y)),
+        (0.0, -1.0, 0.0) => Ok((-1, JointAxis::Y)),
+        (0.0, 0.0, 1.0) => Ok((1, JointAxis::Z)),
+        (0.0, 0.0, -1.0) => Ok((-1, JointAxis::Z)),
         _ => Err("Axis vector must be exactly one signed unit axis (±1 with two zeros)".into()),
     }
 }
@@ -320,10 +366,10 @@ fn convert_to_map(joints: Vec<JointData>) -> Result<HashMap<String, JointData>, 
     Ok(map)
 }
 
-/// OPW parameters as extrancted from URDF file, including constraints 
+/// OPW parameters as extrancted from URDF file, including constraints
 /// (joint offsets are not directly defined in URDF). This structure
 /// can provide robot parameters, constraints and sign corrections,
-/// or alterntively can be converted to the robot directly. 
+/// or alterntively can be converted to the robot directly.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct URDFParameters {
     pub a1: f64,
@@ -336,7 +382,13 @@ pub struct URDFParameters {
     pub sign_corrections: [i8; 6],
     pub from: Joints, // Array to store the lower limits
     pub to: Joints,   // Array to store the upper limits
-    pub dof: i8
+    pub dof: i8,
+
+    /// Accumulated fixed rotation (roll, pitch, yaw in radians) from joint origins
+    /// that the OPW formula cannot represent. This occurs when joint origins have
+    /// non-zero rpy attributes (e.g., a flange rotation absorbed into a joint).
+    /// Apply as a post-multiplication on FK results: `pose * Isometry3::from(rotation)`.
+    pub origin_rpy_correction: [f64; 3],
 }
 
 impl URDFParameters {
@@ -360,6 +412,32 @@ impl URDFParameters {
                 sorting_weight,
             ),
         )
+    }
+
+    /// Returns true if the URDF had non-zero rpy values on joint origins
+    /// that the OPW formula cannot represent.
+    pub fn has_origin_rpy_correction(&self) -> bool {
+        self.origin_rpy_correction.iter().any(|v| v.abs() > 1e-10)
+    }
+
+    /// Build a robot that includes any origin rpy corrections as a tool transform.
+    /// Use this instead of `to_robot()` when the URDF may have non-zero rpy on
+    /// joint origins (e.g., flange rotation absorbed into a joint).
+    pub fn to_corrected_robot(self, sorting_weight: f64, offsets: &Joints) -> Arc<dyn Kinematics> {
+        let robot = self.to_robot(sorting_weight, offsets);
+        if self.has_origin_rpy_correction() {
+            let [r, p, y] = self.origin_rpy_correction;
+            let correction = Isometry3::from_parts(
+                nalgebra::Translation3::identity(),
+                UnitQuaternion::from_euler_angles(r, p, y),
+            );
+            Arc::new(Tool {
+                robot: Arc::new(robot),
+                tool: correction,
+            })
+        } else {
+            Arc::new(robot)
+        }
     }
 
     /// Return extracted constraints.
@@ -406,18 +484,26 @@ fn populate_opw_parameters(joint_map: HashMap<String, JointData>, joint_names: &
         opw_parameters.from[j] = joint.from;
         opw_parameters.to[j] = joint.to;
 
+        for i in 0..3 {
+            opw_parameters.origin_rpy_correction[i] += joint.rpy[i];
+        }
+
         match j + 1 { // Joint number 1 to 6 inclusive
             1 => {
                 opw_parameters.c1 = joint.vector.non_zero()?;
             }
             2 => {
-                opw_parameters.a1 = joint.vector.non_zero()?;
+                // Joint 2 offset: component along J1's axis (Z) accumulates into c1.
+                // Component perpendicular to J1's axis is lateral offset a1.
+                // J1 always rotates around Z in OPW convention.
+                opw_parameters.c1 += joint.vector.z;
+                opw_parameters.a1 = non_zero_pair(joint.vector.x, joint.vector.y)?;
             }
             3 => {
-                // There is more divergence here. 
+                // There is more divergence here.
                 match joint.vector.non_zero() {
                     Ok(value) => {
-                        // If there is only one value, it is value for c2. Most of the 
+                        // If there is only one value, it is value for c2. Most of the
                         // modern robots we tested do follow this design.
                         opw_parameters.c2 = value;
                         opw_parameters.b = 0.0;
@@ -431,29 +517,22 @@ fn populate_opw_parameters(joint_map: HashMap<String, JointData>, joint_names: &
                 }
             }
             4 => {
-                match joint.vector.non_zero() {
-                    Ok(value) => {
-                        opw_parameters.a2 = -value;
+                // Joint 4 offset: component along J4's own rotation axis goes into c3
+                // (chain distance from J3 to J4). Components perpendicular to J4's
+                // rotation axis contribute to a2 (negated per OPW convention).
+                let (along, perp) = split_along_axis(&joint.vector, joint.axis)?;
+                if along != 0.0 {
+                    if opw_parameters.c3 != 0.0 {
+                        return Err(String::from("C3 seems defined twice (J4)"));
                     }
-                    Err(_err) => {
-                        // If there are multiple values, we assume a2 is given here as z.
-                        // c3 is given either in y or in x, other being 0.
-                        opw_parameters.a2 = -joint.vector.z;
-                        if opw_parameters.c3 != 0.0 {
-                            return Err(String::from("C3 seems defined twice (J4)"));
-                        }
-                        opw_parameters.c3 = non_zero_pair(joint.vector.x, joint.vector.y)?;
-                    }
+                    opw_parameters.c3 = along;
                 }
+                opw_parameters.a2 = -perp;
             }
             5 => {
                 let candidate = joint.vector.non_zero()?;
                 if candidate != 0.0 {
-                    if opw_parameters.c3 != 0.0 {
-                        return Err(String::from("C3 seems defined twice (J5)"));
-                    } else {
-                        opw_parameters.c3 = candidate;
-                    }
+                    opw_parameters.c3 += candidate;
                 }
             }
             6 => {
@@ -655,6 +734,29 @@ mod tests {
         assert_eq!(opw_parameters.c2, 0.6, "c2 parameter mismatch");
         assert_eq!(opw_parameters.c3, 0.615, "c3 parameter mismatch");
         assert_eq!(opw_parameters.c4, 0.10, "c4 parameter mismatch");
+    }
+
+    #[test]
+    fn test_split_along_axis_single_perp() {
+        let v = Vector3 { x: 1.0, y: 0.0, z: 3.0 };
+        let (along, perp) = split_along_axis(&v, JointAxis::Z).unwrap();
+        assert_eq!(along, 3.0);
+        assert_eq!(perp, 1.0);
+    }
+
+    #[test]
+    fn test_split_along_axis_no_perp() {
+        let v = Vector3 { x: 0.0, y: 0.0, z: 5.0 };
+        let (along, perp) = split_along_axis(&v, JointAxis::Z).unwrap();
+        assert_eq!(along, 5.0);
+        assert_eq!(perp, 0.0);
+    }
+
+    #[test]
+    fn test_split_along_axis_rejects_two_perp() {
+        let v = Vector3 { x: 1.0, y: 2.0, z: 3.0 };
+        assert!(split_along_axis(&v, JointAxis::Z).is_err(),
+                "Should error when both perpendicular components are non-zero");
     }
 
     #[test]

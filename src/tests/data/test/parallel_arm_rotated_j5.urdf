@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  Same parallel arm but with joint5's rotation absorbed into the joint origin
+  (axis X with -90deg pitch), as in the ai-core URDF. This triggers Issue 2:
+  the library only reads xyz from origin, never rpy, so the orientation FK
+  is wrong by Ry(-pi/2).
+
+  This is kinematically equivalent to the standard form (parallel_arm.urdf)
+  via the identity: Rz(theta) * Ry(-pi/2) = Ry(-pi/2) * Rx(theta).
+-->
+<robot name="parallel_arm_rotated_j5">
+  <link name="base_link"/>
+  <link name="link_1"/>
+  <link name="link_2"/>
+  <link name="link_3"/>
+  <link name="link_4"/>
+  <link name="link_5"/>
+  <link name="link_6"/>
+
+  <joint name="joint1" type="revolute">
+    <origin xyz="0 0 0.036" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint2" type="revolute">
+    <origin xyz="0 0 0.065" rpy="0 0 0"/>
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.57" upper="1.57" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint3" type="revolute">
+    <origin xyz="0 0 0.445" rpy="0 0 0"/>
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint4" type="revolute">
+    <origin xyz="0 0 0.24655" rpy="0 0 0"/>
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <!-- Issue 2: axis is X instead of Z, with -90deg pitch in origin rpy -->
+  <joint name="joint5" type="revolute">
+    <origin xyz="0 0 0.1965" rpy="0 -1.5707963267948966 0"/>
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint6" type="revolute">
+    <origin xyz="0 0 0.1765" rpy="0 0 0"/>
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.28" upper="6.28" effort="0" velocity="2.0"/>
+  </joint>
+</robot>
